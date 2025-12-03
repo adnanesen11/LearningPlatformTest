@@ -19,3 +19,18 @@ pnpm-debug.log*
 
 # jetbrains setting folder
 .idea/
+
+# local working artifacts (keep heavy or personal files out of git)
+analysis/
+transcripts/
+videos/
+input-audio-example/
+consoleoutput.txt
+tokencounter.txt
+
+# media captures
+*.mp4
+*.mov
+*.mkv
+*.avi
+*.webm

@@ -1,0 +1,39 @@
+AI Interview System TODOs
+=========================
+
+1. Require camera and microphone
+   - Validate camera is visible / video track is live.
+   - Require camera + mic permissions before enabling "Start Interview".
+
+2. Header branding
+   - Add Cleartalent logo in the top-left.
+   - Add "AI-Powered Interview System" subtitle under the logo.
+
+3. Interview lifecycle / controls
+   - Remove the End Interview button from the UI.
+   - End interviews automatically using wrap-up logic instead of manual click.
+   - At the start of the 15th minute, have the AI begin wrapping up (no summarization, just natural closing and final questions).
+   - If the candidate exits the interview early (tab close / disconnect), mark the session as "incomplete".
+
+4. Candidate identification
+   - Require candidate First name, Last name, and Email before starting the interview.
+   - Candidate name is not important for logic, but should be stored for display/reporting.
+
+5. Admin / first screen view
+   - On the first/admin screen, show a list of completed interviews.
+   - Include: job title, candidate name, transcript link, recording link, status (completed/incomplete), and rating.
+   - Make the list searchable/filterable (e.g., by job title, date, status).
+
+6. Transcript, recording, and analysis
+   - Save full transcript when the interview ends.
+   - Save audio recording(s) for the interview (candidate + assistant, or mixed).
+   - After interview completion, run LLM-based candidate analysis and rating.
+   - Store analysis results with the session for later review.
+
+7. Token usage and cost controls
+   - Implement client-side token counter using `response.done` and `conversation.item.input_audio_transcription.completed` usage fields.
+   - Log per-turn and per-session token totals for both conversation and transcription.
+   - Consider persisting token totals per session on the server.
+   - Add options to switch between `gpt-realtime` and `gpt-realtime-mini` to manage cost.
+   - Configure truncation / context limits to bound token usage.
+

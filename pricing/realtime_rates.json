@@ -1,0 +1,32 @@
+{
+  "metadata": {
+    "currency": "USD",
+    "billing_unit": "per 1M tokens",
+    "tier": "standard",
+    "notes": "Rates for Realtime models we use; update if OpenAI pricing changes."
+  },
+  "gpt-realtime": {
+    "text": {
+      "input_per_million": 4.0,
+      "cached_input_per_million": 0.4,
+      "output_per_million": 16.0
+    },
+    "audio": {
+      "input_per_million": 32.0,
+      "cached_input_per_million": 0.4,
+      "output_per_million": 64.0
+    }
+  },
+  "gpt-realtime-mini": {
+    "text": {
+      "input_per_million": 0.6,
+      "cached_input_per_million": 0.06,
+      "output_per_million": 2.4
+    },
+    "audio": {
+      "input_per_million": 10.0,
+      "cached_input_per_million": 0.3,
+      "output_per_million": 20.0
+    }
+  }
+}

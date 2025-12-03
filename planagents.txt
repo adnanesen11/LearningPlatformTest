@@ -1,0 +1,61 @@
+Plan: Move interview pacing/wrap to Agents SDK orchestration
+
+Goal
+- Replace bespoke client-side state machine for pacing and wrap-up with an agent-driven flow using Realtime Agents SDK (WebRTC in browser), keeping a thin client safety net for hard stops/audio drain.
+
+High-level approach
+- Use a primary “Interviewer” RealtimeAgent with clear instructions and tools to drive questioning, pacing, and wrap.
+- Add a wrap-specific tool (`end_interview`) and, optionally, helper tools (e.g., `summarize_wrap`) that the agent invokes itself.
+- Use handoffs to a “Closer” agent for clean endings once wrap criteria are met (turn budget, soft time budget, or client signal).
+- Leverage guardrails and turn detection to curb overruns and interjections instead of manual timers.
+- Keep a minimal client guard: cancel in-flight responses on hard cutoff, wait for `output_audio_buffer.stopped`, and stop the session.
+
+Detailed steps
+1) Define agents
+   - Interviewer agent: instructions to conduct the interview, stay within a soft time/turn budget, avoid explicit time talk, and when receiving a wrap signal/tool_choice, call `end_interview` immediately.
+   - Closer agent (optional handoff): short thank-you, no new questions, then call `end_interview`.
+
+2) Tools
+   - `end_interview` tool: function tool to stop the session. Mark with `needsApproval: false` for auto execution. In client/browser, it’s a no-op body and just signals shutdown.
+   - Optional: `summarize_wrap` tool to generate a brief thank-you/next-steps message if you want deterministic wrap content.
+
+3) Handoffs for pacing
+   - Configure Interviewer with a handoff to Closer. Rule: after N turns or when soft time budget elapses, hand off. The session history persists, so Closer can thank and stop.
+   - Alternatively, keep a single agent and set explicit instructions to wrap after soft budget and call `end_interview`.
+
+4) Turn detection and interruptions
+   - Use `turnDetection` (semantic_vad, interruptResponse: true) in session config to handle barge-in and avoid manual VAD logic.
+   - Keep responses concise via instructions; guardrails can enforce max length or block post-cue questions.
+
+5) Guardrails
+   - Output guardrail to prevent asking new questions after a wrap signal is active (e.g., trip if text contains a question after wrap state).
+   - Optional: guardrail to block time mentions except when explicitly allowed.
+
+6) Transport and session
+   - WebRTC in browser (default). If server-side or telephony, switch to `transport: 'websocket'` or SIP.
+   - Use `session.transport` to observe all events and send raw events if needed; otherwise rely on SDK abstractions.
+
+7) Wrap trigger logic (agent-driven)
+   - Agent monitors conversational budget (turns/soft duration) via instructions (no real clock).
+   - Client can send a “wrap” system message or `response.create` with `tool_choice: end_interview` to force; agent instructed to comply immediately.
+   - Handoff or tool call should produce the closing message and `end_interview` without client-side sequencing.
+
+8) Client safety net (minimal)
+   - Keep a hard max duration/turn count; on breach, send `response.cancel` for in-flight reply, force `end_interview`, wait for `output_audio_buffer.stopped`, then stop.
+   - Suppress tool-return payloads from UI; only render human-facing text.
+
+9) Migration steps from current implementation
+   - Introduce RealtimeAgent definitions (Interviewer, optional Closer) and tools in the client (browser) code or backend if using WebSocket transport.
+   - Replace manual wrap enforcement in `public/src/interview.js` with: send a wrap signal (`response.create` tool_choice) when client hard stop is needed; otherwise, let agent handle pacing.
+   - Simplify timer UI to stopwatch/soft budget; remove mid-turn countdown gating logic.
+   - Retain audio drain stop: stop session on `output_audio_buffer.stopped` after `end_interview`.
+
+10) Testing
+    - Simulate mid-question wrap: ensure agent cancels/doesn’t interject, closes cleanly.
+    - Simulate user “stop” intent: verify agent or client-triggered `end_interview` fires immediately.
+    - Verify no double-goodbye and no JSON/tool payloads in UI.
+
+Notes
+- Agents SDK handoffs keep history and model/voice; cannot change model/voice mid-handoff.
+- Tools execute where the session runs (browser for WebRTC). Use HTTP calls inside tools for sensitive/backend actions.
+- Guardrails run on text; keep text output enabled for enforcement.
