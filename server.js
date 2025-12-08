@@ -13,6 +13,8 @@ const __dirname = path.dirname(__filename);
 const videosDir = path.join(__dirname, 'videos');
 const transcriptsDir = path.join(__dirname, 'transcripts');
 const analysisDir = path.join(__dirname, 'analysis');
+const positionsFile = path.join(__dirname, 'positions.json');
+const sessionsFile = path.join(__dirname, 'sessions.json');
 fs.mkdirSync(videosDir, { recursive: true });
 fs.mkdirSync(transcriptsDir, { recursive: true });
 fs.mkdirSync(analysisDir, { recursive: true });
@@ -26,9 +28,66 @@ const apiKey = process.env.OPENAI_API_KEY;
 const bedrockRegion = process.env.AWS_REGION || "us-east-1";
 const bedrockModelId = process.env.BEDROCK_CLAUDE_MODEL_ID || "us.anthropic.claude-haiku-4-5-20251001-v1:0";
 const bedrockClient = new BedrockRuntimeClient({ region: bedrockRegion });
+const azureRealtimeEndpoint = (process.env.AZURE_OPENAI_ENDPOINT || '').replace(/\/$/, '');
+const azureRealtimeDeployment = process.env.AZURE_OPENAI_DEPLOYMENT || '';
+const azureRealtimeApiVersion = process.env.AZURE_OPENAI_API_VERSION || '';
+const azureRealtimeApiKey = process.env.AZURE_OPENAI_API_KEY || '';
 
-// In-memory storage for interview sessions
+// In-memory storage for positions and interview sessions
+const positions = new Map();
 const interviewSessions = new Map();
+
+// Load positions from disk
+function loadPositionsFromDisk() {
+  try {
+    if (fs.existsSync(positionsFile)) {
+      const data = fs.readFileSync(positionsFile, 'utf8');
+      const positionsArray = JSON.parse(data);
+      positionsArray.forEach(position => {
+        positions.set(position.positionId, position);
+      });
+      console.log(`Loaded ${positionsArray.length} positions from disk`);
+    }
+  } catch (error) {
+    console.error('Error loading positions from disk:', error);
+  }
+}
+
+// Save positions to disk
+function savePositionsToDisk() {
+  try {
+    const positionsArray = Array.from(positions.values());
+    fs.writeFileSync(positionsFile, JSON.stringify(positionsArray, null, 2), 'utf8');
+  } catch (error) {
+    console.error('Error saving positions to disk:', error);
+  }
+}
+
+// Load sessions from disk
+function loadSessionsFromDisk() {
+  try {
+    if (fs.existsSync(sessionsFile)) {
+      const data = fs.readFileSync(sessionsFile, 'utf8');
+      const sessionsArray = JSON.parse(data);
+      sessionsArray.forEach(session => {
+        interviewSessions.set(session.sessionId, session);
+      });
+      console.log(`Loaded ${sessionsArray.length} sessions from disk`);
+    }
+  } catch (error) {
+    console.error('Error loading sessions from disk:', error);
+  }
+}
+
+// Save sessions to disk
+function saveSessionsToDisk() {
+  try {
+    const sessionsArray = Array.from(interviewSessions.values());
+    fs.writeFileSync(sessionsFile, JSON.stringify(sessionsArray, null, 2), 'utf8');
+  } catch (error) {
+    console.error('Error saving sessions to disk:', error);
+  }
+}
 
 // Generate unique session ID
 function generateSessionId() {
@@ -154,10 +213,10 @@ app.use('/transcripts', express.static(transcriptsDir));
 app.use('/analysis', express.static(analysisDir));
 app.use('/api/upload-media', express.raw({ type: '*/*', limit: '500mb' }));
 
-// API: Create new interview session
-app.post('/api/create-session', (req, res) => {
+// API: Create new position (reusable interview link)
+app.post('/api/create-position', (req, res) => {
   try {
-    const { jobTitle, candidateName, jobDescription, maxQuestions: maxQuestionsRaw } = req.body;
+    const { jobTitle, jobDescription, maxQuestions: maxQuestionsRaw, useAzure } = req.body;
 
     if (!jobTitle || !jobDescription) {
       return res.status(400).json({ error: 'Job title and description are required' });
@@ -166,57 +225,186 @@ app.post('/api/create-session', (req, res) => {
     const maxQuestionsNum = Number(maxQuestionsRaw);
     const maxQuestions = Number.isFinite(maxQuestionsNum) && maxQuestionsNum > 0 ? Math.floor(maxQuestionsNum) : 10;
 
-    const sessionId = generateSessionId();
-    const systemPrompt = createInterviewPrompt(jobTitle, candidateName, jobDescription, maxQuestions);
+    const positionId = generateSessionId();
+    const systemPrompt = createInterviewPrompt(jobTitle, '', jobDescription, maxQuestions);
 
-  const session = {
-    sessionId,
-    jobTitle,
-    candidateName: candidateName || '',
-    jobDescription,
-    maxQuestions,
-    systemPrompt,
-    createdAt: new Date().toISOString(),
-    media: {
-      combined: null
-    },
-    transcriptPath: null,
-    analysisPath: null
-  };
+    const position = {
+      positionId,
+      jobTitle,
+      jobDescription,
+      maxQuestions,
+      systemPrompt,
+      useAzure: !!useAzure,
+      createdAt: new Date().toISOString(),
+      interviewSessions: [] // Array of session IDs
+    };
 
-    interviewSessions.set(sessionId, session);
+    positions.set(positionId, position);
+    savePositionsToDisk();
 
-    console.log(`Created interview session: ${sessionId} for ${jobTitle}`);
+    console.log(`Created position: ${positionId} for ${jobTitle}`);
 
-    res.json({ sessionId, interviewLink: `/interview/${sessionId}` });
+    res.json({ positionId, interviewLink: `/interview/${positionId}` });
   } catch (error) {
-    console.error('Error creating session:', error);
-    res.status(500).json({ error: 'Failed to create session' });
+    console.error('Error creating position:', error);
+    res.status(500).json({ error: 'Failed to create position' });
   }
 });
 
-// API: Get all sessions
+// API: Create new interview session (when candidate starts interview)
+app.post('/api/position/:positionId/start-interview', (req, res) => {
+  try {
+    const { positionId } = req.params;
+    const { candidateName, candidateEmail } = req.body;
+
+    const position = positions.get(positionId);
+    if (!position) {
+      return res.status(404).json({ error: 'Position not found' });
+    }
+
+    if (!candidateName || !candidateEmail) {
+      return res.status(400).json({ error: 'Candidate name and email are required' });
+    }
+
+    const sessionId = generateSessionId();
+    const systemPrompt = createInterviewPrompt(position.jobTitle, candidateName, position.jobDescription, position.maxQuestions);
+
+    const session = {
+      sessionId,
+      positionId,
+      candidateName,
+      candidateEmail,
+      jobTitle: position.jobTitle,
+      systemPrompt,
+      useAzure: position.useAzure,
+      createdAt: new Date().toISOString(),
+      status: 'pending',
+      startedAt: null,
+      completedAt: null,
+      media: {
+        combined: null
+      },
+      transcriptPath: null,
+      analysisPath: null,
+      analysisScore: null
+    };
+
+    interviewSessions.set(sessionId, session);
+    position.interviewSessions.push(sessionId);
+
+    saveSessionsToDisk();
+    savePositionsToDisk();
+
+    console.log(`Started interview session: ${sessionId} for ${candidateName} (Position: ${positionId})`);
+
+    res.json({ sessionId });
+  } catch (error) {
+    console.error('Error starting interview:', error);
+    res.status(500).json({ error: 'Failed to start interview' });
+  }
+});
+
+// API: Get all positions with their sessions
+app.get('/api/positions', (req, res) => {
+  const positionsWithSessions = Array.from(positions.values()).map(position => {
+    const sessions = position.interviewSessions.map(sessionId => {
+      const session = interviewSessions.get(sessionId);
+      return session || null;
+    }).filter(s => s !== null);
+
+    return {
+      ...position,
+      sessions,
+      candidateCount: sessions.length,
+      lastScreeningDate: sessions.length > 0
+        ? sessions.reduce((latest, s) => {
+            const date = new Date(s.completedAt || s.createdAt);
+            return date > new Date(latest) ? (s.completedAt || s.createdAt) : latest;
+          }, sessions[0].createdAt)
+        : null
+    };
+  });
+
+  res.json(positionsWithSessions);
+});
+
+// API: Get specific position
+app.get('/api/position/:id', (req, res) => {
+  const position = positions.get(req.params.id);
+
+  if (!position) {
+    return res.status(404).json({ error: 'Position not found' });
+  }
+
+  res.json(position);
+});
+
+// API: Get all sessions (kept for backward compatibility)
 app.get('/api/sessions', (req, res) => {
   const sessions = Array.from(interviewSessions.values()).map(session => ({
     sessionId: session.sessionId,
+    positionId: session.positionId,
     jobTitle: session.jobTitle,
     candidateName: session.candidateName,
+    candidateEmail: session.candidateEmail,
     maxQuestions: session.maxQuestions,
+    useAzure: !!session.useAzure,
     createdAt: session.createdAt,
+    status: session.status,
+    startedAt: session.startedAt,
+    completedAt: session.completedAt,
     media: session.media || {},
     transcriptPath: session.transcriptPath || null,
-    analysisPath: session.analysisPath || null
+    analysisPath: session.analysisPath || null,
+    analysisScore: session.analysisScore || null
   }));
 
   res.json(sessions);
 });
 
-// API: Get specific session
+// API: Get specific session (or position if it's a position ID)
 app.get('/api/session/:id', (req, res) => {
+  const id = req.params.id;
+
+  // Try session first
+  let session = interviewSessions.get(id);
+  if (session) {
+    return res.json(session);
+  }
+
+  // Try position
+  const position = positions.get(id);
+  if (position) {
+    // Return position data formatted like a session for backward compatibility
+    return res.json({
+      sessionId: position.positionId,
+      isPosition: true,
+      jobTitle: position.jobTitle,
+      jobDescription: position.jobDescription,
+      systemPrompt: position.systemPrompt,
+      useAzure: position.useAzure,
+      maxQuestions: position.maxQuestions
+    });
+  }
+
+  res.status(404).json({ error: 'Session or position not found' });
+});
+
+// API: Update session status
+app.patch('/api/session/:id/status', (req, res) => {
   const session = interviewSessions.get(req.params.id);
 
   if (!session) {
     return res.status(404).json({ error: 'Session not found' });
+  }
+
+  const { status } = req.body;
+  if (status && ['pending', 'in-progress', 'completed'].includes(status)) {
+    session.status = status;
+    if (status === 'in-progress' && !session.startedAt) {
+      session.startedAt = new Date().toISOString();
+    }
+    saveSessionsToDisk();
   }
 
   res.json(session);
@@ -266,6 +454,101 @@ app.get("/token", async (req, res) => {
   } catch (error) {
     console.error("Token generation error:", error);
     res.status(500).json({ error: "Failed to generate token" });
+  }
+});
+
+// Azure: client secret for WebRTC GA
+app.get("/azure/token", async (req, res) => {
+  try {
+    if (!azureRealtimeEndpoint || !azureRealtimeDeployment || !azureRealtimeApiKey) {
+      return res.status(400).json({ error: "Azure Realtime env vars missing" });
+    }
+    const url = `${azureRealtimeEndpoint}/openai/v1/realtime/client_secrets`;
+    const body = {
+      session: {
+        type: "realtime",
+        model: azureRealtimeDeployment,
+        audio: { output: { voice: "alloy" } }
+      }
+    };
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "api-key": azureRealtimeApiKey,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(body)
+    });
+    if (!response.ok) {
+      const text = await response.text();
+      return res.status(response.status).send(text);
+    }
+    const data = await response.json();
+    res.json({
+      client_secret: data.value || data.client_secret || null,
+      endpoint: azureRealtimeEndpoint,
+      deployment: azureRealtimeDeployment,
+      apiVersion: azureRealtimeApiVersion
+    });
+  } catch (err) {
+    console.error("Azure token error:", err);
+    res.status(500).json({ error: "Failed to fetch Azure client secret" });
+  }
+});
+
+// Azure: negotiate SDP server-side (keeps client secret hidden)
+app.post("/azure/session", async (req, res) => {
+  try {
+    if (!azureRealtimeEndpoint || !azureRealtimeDeployment || !azureRealtimeApiKey) {
+      return res.status(400).json({ error: "Azure Realtime env vars missing" });
+    }
+    const offerSdp = typeof req.body === "string" ? req.body : "";
+    if (!offerSdp) {
+      return res.status(400).send("Missing SDP offer payload");
+    }
+    // get client secret
+    const tokenResp = await fetch(`${azureRealtimeEndpoint}/openai/v1/realtime/client_secrets`, {
+      method: "POST",
+      headers: {
+        "api-key": azureRealtimeApiKey,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        session: {
+          type: "realtime",
+          model: azureRealtimeDeployment,
+          audio: { output: { voice: "alloy" } }
+        }
+      })
+    });
+    if (!tokenResp.ok) {
+      const text = await tokenResp.text();
+      return res.status(tokenResp.status).send(text);
+    }
+    const tokenJson = await tokenResp.json();
+    const clientSecret = tokenJson.value || tokenJson.client_secret;
+    if (!clientSecret) {
+      return res.status(500).send("Failed to get client secret");
+    }
+
+    const callUrl = `${azureRealtimeEndpoint}/openai/v1/realtime/calls`;
+    const sdpResp = await fetch(callUrl, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${clientSecret}`,
+        "Content-Type": "application/sdp"
+      },
+      body: offerSdp
+    });
+    if (!sdpResp.ok) {
+      const text = await sdpResp.text();
+      return res.status(sdpResp.status).send(text);
+    }
+    const answerSdp = await sdpResp.text();
+    res.type("application/sdp").send(answerSdp);
+  } catch (err) {
+    console.error("Azure session error:", err);
+    res.status(500).send("Failed to create Azure session");
   }
 });
 
@@ -362,6 +645,11 @@ app.post('/api/upload-media', (req, res) => {
         session.media = session.media || {};
         if (safeType.includes('combined')) {
           session.media.combined = finalPath;
+          // Mark session as completed when video is uploaded
+          if (session.status === 'in-progress') {
+            session.status = 'completed';
+            session.completedAt = new Date().toISOString();
+          }
         } else if (safeType.includes('camera')) {
           session.media.camera = finalPath;
         } else if (safeType.includes('candidate')) {
@@ -369,6 +657,7 @@ app.post('/api/upload-media', (req, res) => {
         } else if (safeType.includes('assistant')) {
           session.media.assistantAudio = finalPath;
         }
+        saveSessionsToDisk();
       }
       res.json({ path: finalPath });
     });
@@ -394,6 +683,7 @@ app.post('/api/session/:id/transcript', express.text({ type: ['text/plain', 'tex
     const filePath = path.join(transcriptsDir, filename);
     fs.writeFileSync(filePath, transcriptText, 'utf8');
     session.transcriptPath = `/transcripts/${filename}`;
+    saveSessionsToDisk();
     res.json({ path: session.transcriptPath });
   } catch (error) {
     console.error('Transcript save error:', error);
@@ -653,6 +943,8 @@ app.post('/api/session/:id/analyze', express.json(), async (req, res) => {
       outPath: filePath
     });
     session.analysisPath = `/analysis/${filename}`;
+    session.analysisScore = score;
+    saveSessionsToDisk();
     res.json({ path: session.analysisPath });
   } catch (error) {
     console.error('Analysis error:', error);
@@ -669,6 +961,10 @@ app.get('/interview/:sessionId', (req, res) => {
 app.get('/', (req, res) => {
   res.redirect('/admin');
 });
+
+// Load positions and sessions from disk on startup
+loadPositionsFromDisk();
+loadSessionsFromDisk();
 
 app.listen(port, () => {
   console.log(`AI Interview Platform running on http://localhost:${port}`);

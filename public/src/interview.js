@@ -1,6 +1,7 @@
-// Extract session ID from URL
+// Extract position/session ID from URL
 const pathParts = window.location.pathname.split('/');
-const interviewSessionId = pathParts[pathParts.length - 1];
+let interviewSessionId = pathParts[pathParts.length - 1];
+let currentPositionId = null;
 
 // DOM elements
 const startButton = document.getElementById('start');
@@ -11,6 +12,8 @@ const cameraFeed = document.getElementById('camera-feed');
 const cameraStatus = document.getElementById('camera-status');
 const videoOverlay = document.getElementById('video-overlay');
 const timerText = document.getElementById('timer-text');
+const candidateModal = document.getElementById('candidate-info-modal');
+const candidateForm = document.getElementById('candidate-info-form');
 
 // State variables
 let peerConnection = null;
@@ -27,9 +30,13 @@ let isSessionActive = false;
 let sessionPrompt = '';
 let sessionDetails = null;
 let hasSentGreeting = false;
-const VAD_CONFIG = {
-    // type: 'server_vad',
-    // silence_duration_ms: 1500
+const USE_AZURE_REALTIME = new URLSearchParams(window.location.search).get('azure') === '1';
+const VAD_CONFIG_DEFAULT = {
+    type: 'semantic_vad',
+    eagerness: 'medium'
+};
+
+const VAD_CONFIG_AZURE = {
     type: 'semantic_vad',
     eagerness: 'medium'
 };
@@ -83,6 +90,7 @@ let speechStartTimestamp = null;
 let userSpeaking = false;
 let pendingTranscriptSave = null;
 
+// Azure Realtime helpers
 // Initialize session
 async function initializeSession() {
     if (!interviewSessionId || interviewSessionId === 'interview') {
@@ -91,15 +99,25 @@ async function initializeSession() {
     }
 
     try {
-        // Fetch session details
+        // Fetch session/position details
         const response = await fetch(`/api/session/${interviewSessionId}`);
         if (!response.ok) {
             throw new Error('Interview session not found');
         }
 
-        const session = await response.json();
-        sessionPrompt = session.systemPrompt;
-        sessionDetails = session;
+        const data = await response.json();
+
+        // Check if this is a position (not a session yet)
+        if (data.isPosition) {
+            currentPositionId = data.sessionId;
+            // Show candidate info modal
+            candidateModal.classList.remove('hidden');
+            return;
+        }
+
+        // It's an existing session, proceed normally
+        sessionPrompt = data.systemPrompt;
+        sessionDetails = data;
         hasSentGreeting = false;
 
         // Initialize camera
@@ -111,6 +129,54 @@ async function initializeSession() {
         showError(error.message);
     }
 }
+
+// Handle candidate info form submission
+candidateForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+
+    const candidateName = document.getElementById('candidate-name').value.trim();
+    const candidateEmail = document.getElementById('candidate-email').value.trim();
+
+    if (!candidateName || !candidateEmail) {
+        alert('Please enter both name and email');
+        return;
+    }
+
+    try {
+        // Create new interview session
+        const response = await fetch(`/api/position/${currentPositionId}/start-interview`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ candidateName, candidateEmail })
+        });
+
+        if (!response.ok) {
+            throw new Error('Failed to start interview');
+        }
+
+        const { sessionId } = await response.json();
+        interviewSessionId = sessionId;
+
+        // Hide modal
+        candidateModal.classList.add('hidden');
+
+        // Load the new session
+        const sessionResponse = await fetch(`/api/session/${sessionId}`);
+        const session = await sessionResponse.json();
+
+        sessionPrompt = session.systemPrompt;
+        sessionDetails = session;
+        hasSentGreeting = false;
+
+        // Initialize camera
+        await initCamera();
+
+        startButton.disabled = false;
+    } catch (error) {
+        console.error('Error starting interview:', error);
+        alert('Failed to start interview: ' + error.message);
+    }
+});
 
 // Initialize camera
 async function initCamera() {
@@ -180,11 +246,24 @@ async function negotiateDirectly(sdp) {
 }
 
 async function getSdpAnswer(sdp) {
-    try {
-        return await negotiateWithServer(sdp);
-    } catch (serverError) {
-        console.warn('Server negotiation failed, falling back to direct negotiation', serverError);
-        return await negotiateDirectly(sdp);
+    if (USE_AZURE_REALTIME) {
+        const resp = await fetch('/azure/session', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/sdp' },
+            body: sdp
+        });
+        const txt = await resp.text();
+        if (!resp.ok) {
+            throw new Error(`Azure negotiation failed: ${txt}`);
+        }
+        return txt;
+    } else {
+        try {
+            return await negotiateWithServer(sdp);
+        } catch (serverError) {
+            console.warn('Server negotiation failed, falling back to direct negotiation', serverError);
+            return await negotiateDirectly(sdp);
+        }
     }
 }
 
@@ -226,38 +305,66 @@ async function startInterview() {
 
         dc.addEventListener('open', () => {
             console.log('Data channel opened');
-            isSessionActive = true;
-            liveIndicator.textContent = 'LIVE';
-            stopButton.disabled = false;
-            tryStartCombinedRecording();
+        isSessionActive = true;
+        liveIndicator.textContent = 'LIVE';
+        stopButton.disabled = false;
+        tryStartCombinedRecording();
 
-            sendEvent({
-                type: 'session.update',
-                session: {
-                    instructions: sessionPrompt,
-                    turn_detection: VAD_CONFIG,
-                    voice: 'sage',
-                    input_audio_transcription: {
-                        model: 'whisper-1',
-                        language: 'en'
-                    },
-                    tools: [
-                        {
-                            type: 'function',
-                            name: 'end_interview',
-                            description: 'Signal that the interview is complete and the assistant should stop. Include an optional reason.',
-                            parameters: {
-                                type: 'object',
-                                properties: {
-                                    reason: {
-                                        type: 'string',
-                                        description: 'Brief note on why the interview is ending.'
-                                    }
+        // Mark session as in-progress
+        fetch(`/api/session/${interviewSessionId}/status`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: 'in-progress' })
+        }).catch(err => console.warn('Failed to update session status:', err));
+
+            const instructions = `${sessionPrompt}\n\nBehave strictly as the interviewer. Respond only in English. Do NOT answer your own questions; ask, then wait for the candidate to reply. If audio is unclear, ask for clarification.`;
+            const voiceName = 'sage';
+            const sessionConfig = {
+                type: 'realtime',
+                instructions,
+                tools: [
+                    {
+                        type: 'function',
+                        name: 'end_interview',
+                        description: 'Signal that the interview is complete and the assistant should stop. Include an optional reason.',
+                        parameters: {
+                            type: 'object',
+                            properties: {
+                                reason: {
+                                    type: 'string',
+                                    description: 'Brief note on why the interview is ending.'
                                 }
                             }
                         }
-                    ]
-                }
+                    }
+                ]
+            };
+            if (USE_AZURE_REALTIME) {
+                // Azure GA expects audio config under audio.input / audio.output.
+                sessionConfig.audio = {
+                    input: {
+                        transcription: { model: 'whisper-1' },
+                        turn_detection: {
+                            type: 'semantic_vad',
+                            eagerness: 'medium'
+                        }
+                    },
+                    output: { voice: voiceName }
+                };
+            } else {
+                sessionConfig.input_audio_transcription = {
+                    model: 'whisper-1',
+                    language: 'en'
+                };
+                sessionConfig.turn_detection = VAD_CONFIG_DEFAULT;
+                sessionConfig.input_audio_format = 'pcm16';
+                sessionConfig.output_audio_format = 'pcm16';
+                sessionConfig.voice = voiceName;
+            }
+
+            sendEvent({
+                type: 'session.update',
+                session: sessionConfig
             });
 
             startStopwatch();
@@ -354,11 +461,12 @@ function triggerInitialGreeting() {
     const jobTitle = sessionDetails?.jobTitle?.trim();
     const greetingTarget = candidateName || 'the candidate';
     const roleContext = jobTitle ? ` for the ${jobTitle} role` : '';
+    const guard = 'Respond only in English. Do NOT answer your own questions; ask, then wait for the candidate to reply. If unclear, ask for clarification.';
 
     sendEvent({
         type: "response.create",
         response: {
-                            instructions: `Begin the interview by greeting ${greetingTarget}${roleContext}. Introduce yourself as the AI interviewer, and smoothly transition into the first question. Respond in English only, regardless of the candidate's language.`
+                            instructions: `${sessionPrompt}\n\nBegin the interview by greeting ${greetingTarget}${roleContext}. Introduce yourself as the AI interviewer, and smoothly transition into the first question. ${guard}`
         }
     });
 
@@ -369,16 +477,38 @@ function triggerInitialGreeting() {
 function handleServerEvent(event) {
     console.log('Received event:', event.type, event);
 
+    const extractItemText = (item = {}) => {
+        const content =
+            item.content?.find?.(c => c.type === 'text') ||
+            item.content?.find?.(c => c.type === 'input_text') ||
+            item.content?.find?.(c => c.type === 'output_text') ||
+            item.content?.find?.(c => c.type === 'audio' && typeof c.transcript === 'string' && c.transcript.length) ||
+            item.content?.find?.(c => c.type === 'input_audio' && typeof c.transcript === 'string' && c.transcript.length) ||
+            item.content?.find?.(c => typeof c.transcript === 'string' && c.transcript.length);
+        return content?.text || content?.transcript || '';
+    };
+
     switch (event.type) {
         case 'conversation.item.created': {
             const item = event.item;
-            if (!item?.id || !item?.role) {
-                break;
+            if (!item?.id || !item?.role) break;
+            const text = extractItemText(item);
+            upsertMessage(item.id, item.role, text);
+            if (item.role === 'assistant') {
+                currentAssistantItemId = item.id;
+                currentUserItemId = null;
+            } else if (item.role === 'user') {
+                currentUserItemId = item.id;
             }
+            break;
+        }
 
-            const content = item.content?.find?.(c => c.type === 'text');
-            upsertMessage(item.id, item.role, content?.text || '');
-
+        case 'conversation.item.added':
+        case 'conversation.item.done': {
+            const item = event.item;
+            if (!item?.id || !item?.role) break;
+            const text = extractItemText(item);
+            upsertMessage(item.id, item.role, text);
             if (item.role === 'assistant') {
                 currentAssistantItemId = item.id;
                 currentUserItemId = null;
@@ -416,6 +546,49 @@ function handleServerEvent(event) {
             break;
         }
 
+        // Azure GA naming
+        case 'response.output_audio_transcript.delta': {
+            const targetId = event.item_id || currentAssistantItemId || `assistant-${event.response_id || Date.now()}`;
+            if (event.delta) {
+                currentAssistantItemId = targetId;
+                appendToMessage(targetId, 'assistant', event.delta);
+                currentUserItemId = null;
+            }
+            break;
+        }
+
+        case 'response.output_audio_transcript.done': {
+            const targetId = event.item_id || currentAssistantItemId || `assistant-${event.response_id || Date.now()}`;
+            const transcript = event.transcript || event.output_text;
+            if (transcript) {
+                upsertMessage(targetId, 'assistant', transcript);
+                currentAssistantItemId = null;
+                currentUserItemId = null;
+            }
+            break;
+        }
+
+        case 'response.output_text.delta': {
+            const targetId = event.item_id || currentAssistantItemId || `assistant-${event.response_id || Date.now()}`;
+            if (event.delta) {
+                currentAssistantItemId = targetId;
+                appendToMessage(targetId, 'assistant', event.delta);
+                currentUserItemId = null;
+            }
+            break;
+        }
+
+        case 'response.output_text.done': {
+            const targetId = event.item_id || currentAssistantItemId || `assistant-${event.response_id || Date.now()}`;
+            const text = typeof event.text === 'string' ? event.text : (event.output_text || '');
+            if (text) {
+                upsertMessage(targetId, 'assistant', text);
+                currentAssistantItemId = null;
+                currentUserItemId = null;
+            }
+            break;
+        }
+
         case 'response.text.done': {
             const targetId = event.item_id || currentAssistantItemId || `assistant-${event.response_id || Date.now()}`;
             if (typeof event.text === 'string') {
@@ -427,16 +600,22 @@ function handleServerEvent(event) {
         }
 
         case 'conversation.item.input_audio_transcription.delta':
+        case 'conversation.item.input_audio_transcript.delta': {
             if (event.item_id && event.delta) {
                 currentUserItemId = event.item_id;
                 appendToMessage(event.item_id, 'user', event.delta);
             }
             break;
+        }
 
         case 'conversation.item.input_audio_transcription.completed':
-            if (event.item_id && event.transcript) {
+        case 'conversation.item.input_audio_transcription.done':
+        case 'conversation.item.input_audio_transcript.done':
+        case 'conversation.item.input_audio_transcript.completed': {
+            const transcriptText = event.transcript || event.text;
+            if (event.item_id && transcriptText) {
                 currentUserItemId = event.item_id;
-                upsertMessage(event.item_id, 'user', event.transcript);
+                upsertMessage(event.item_id, 'user', transcriptText);
             }
             if (event.usage) {
                 const total = event.usage.total_tokens ?? 0;
@@ -445,6 +624,7 @@ function handleServerEvent(event) {
                 tokenUsage.transcription.audioTokens += audioTokens;
             }
             break;
+        }
 
         case 'response.done': {
             const respId = event.response?.id;
@@ -507,6 +687,28 @@ function handleServerEvent(event) {
             speechStartTimestamp = Date.now();
             break;
 
+        case 'input_audio_buffer.committed': {
+            // Azure emits transcripts here when input_audio_transcription is not present in session config.
+            const transcript = event.transcript || event.text;
+            if (event.item_id && transcript) {
+                currentUserItemId = event.item_id;
+                upsertMessage(event.item_id, 'user', transcript);
+            } else if (transcript) {
+                const tmpId = `user-${Date.now()}`;
+                currentUserItemId = tmpId;
+                upsertMessage(tmpId, 'user', transcript);
+            }
+            if (event.usage) {
+                const total = event.usage.total_tokens ?? 0;
+                const audioTokens = event.usage.input_token_details?.audio_tokens ?? 0;
+                tokenUsage.transcription.totalTokens += total;
+                tokenUsage.transcription.audioTokens += audioTokens;
+            }
+            userSpeaking = false;
+            speechStartTimestamp = null;
+            break;
+        }
+
         case 'input_audio_buffer.speech_stopped':
             if (userSpeaking && speechStartTimestamp) {
                 const deltaSeconds = (Date.now() - speechStartTimestamp) / 1000;
@@ -541,6 +743,7 @@ function createMessageElement(role) {
 
     const content = document.createElement('div');
     content.className = 'message-content';
+    content.textContent = role === 'user' ? 'Transcribing...' : '';
     messageDiv.appendChild(content);
 
     chatContainer.appendChild(messageDiv);
@@ -582,8 +785,8 @@ function upsertMessage(itemId, role, text) {
             messageTextCache.set(itemId, text);
         }
         messageDiv.classList.remove('pending');
-    } else if (!existing.length) {
-        contentDiv.textContent = role === 'user' ? 'Transcribing...' : '';
+    } else if (!existing.length && role === 'user') {
+        contentDiv.textContent = 'Transcribing...';
         messageDiv.classList.add('pending');
     }
 

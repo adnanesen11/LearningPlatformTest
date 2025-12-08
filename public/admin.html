@@ -190,6 +190,75 @@
             margin-top: 5px;
             font-style: italic;
         }
+
+        .status-badge {
+            display: inline-block;
+            padding: 5px 12px;
+            border-radius: 12px;
+            font-size: 0.85em;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .status-pending {
+            background: #fef3c7;
+            color: #92400e;
+        }
+
+        .status-in-progress {
+            background: #dbeafe;
+            color: #1e40af;
+        }
+
+        .status-completed {
+            background: #d1fae5;
+            color: #065f46;
+        }
+
+        .stat-card {
+            flex: 1;
+            background: #f8f9fa;
+            border: 2px solid #e0e0e0;
+            border-radius: 10px;
+            padding: 15px;
+            text-align: center;
+        }
+
+        .stat-card .stat-value {
+            font-size: 2em;
+            font-weight: 700;
+            color: #667eea;
+        }
+
+        .stat-card .stat-label {
+            font-size: 0.9em;
+            color: #666;
+            margin-top: 5px;
+        }
+
+        .score-badge {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 8px;
+            font-weight: 600;
+            font-size: 0.9em;
+        }
+
+        .score-high {
+            background: #d1fae5;
+            color: #065f46;
+        }
+
+        .score-medium {
+            background: #fef3c7;
+            color: #92400e;
+        }
+
+        .score-low {
+            background: #fee2e2;
+            color: #991b1b;
+        }
     </style>
 </head>
 <body>
@@ -204,26 +273,37 @@
 
             <form id="createSessionForm">
                 <div class="form-group">
-                    <label for="jobTitle">Job Title</label>
+                    <label for="jobTitle">Position Title</label>
                     <input type="text" id="jobTitle" placeholder="e.g., Senior Software Engineer" required>
-                </div>
-
-                <div class="form-group">
-                    <label for="candidateName">Candidate Name (Optional)</label>
-                    <input type="text" id="candidateName" placeholder="e.g., John Doe">
                 </div>
 
                 <div class="form-group">
                     <label for="jobDescription">Interview Instructions / Job Description</label>
                     <textarea id="jobDescription" placeholder="Enter the interview instructions, job description, and key areas to evaluate..." required></textarea>
-                    <p class="hint">This will guide the AI interviewer. Include specific skills, experience, and qualities you're looking for.</p>
+                    <p class="hint">This will guide the AI interviewer. Include specific skills, experience, and qualities you're looking for. The interview link can be shared with multiple candidates.</p>
+                </div>
+                <div class="form-group" style="display:flex;align-items:center;gap:10px;">
+                    <input type="checkbox" id="useAzureRealtime" style="width:18px;height:18px;">
+                    <label for="useAzureRealtime" style="margin:0;font-weight:600;">Use Azure Realtime (WS)</label>
                 </div>
 
-                <button type="submit" class="btn" id="createBtn">Create Interview Session</button>
+                <button type="submit" class="btn" id="createBtn">Create Interview Position</button>
             </form>
 
             <div class="session-list">
-                <h2>Active Sessions</h2>
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                    <h2 style="margin: 0;">Interview Sessions</h2>
+                    <div style="display: flex; gap: 10px;">
+                        <input type="text" id="searchInput" placeholder="Search by name or job title..." style="width: 250px; padding: 8px 12px; border: 2px solid #e0e0e0; border-radius: 6px;">
+                        <select id="statusFilter" style="padding: 8px 12px; border: 2px solid #e0e0e0; border-radius: 6px;">
+                            <option value="all">All Statuses</option>
+                            <option value="pending">Pending</option>
+                            <option value="in-progress">In Progress</option>
+                            <option value="completed">Completed</option>
+                        </select>
+                    </div>
+                </div>
+                <div id="statsBar" style="display: flex; gap: 15px; margin-bottom: 20px;"></div>
                 <div id="sessionsList"></div>
             </div>
         </div>
@@ -234,47 +314,59 @@
         const messageDiv = document.getElementById('message');
         const sessionsList = document.getElementById('sessionsList');
         const createBtn = document.getElementById('createBtn');
+        const searchInput = document.getElementById('searchInput');
+        const statusFilter = document.getElementById('statusFilter');
+        const statsBar = document.getElementById('statsBar');
+
+        let allSessions = [];
 
         // Load existing sessions on page load
         loadSessions();
+
+        // Add event listeners for search and filter
+        searchInput.addEventListener('input', filterSessions);
+        statusFilter.addEventListener('change', filterSessions);
+
+        // Auto-refresh sessions every 10 seconds
+        setInterval(loadSessions, 10000);
 
         form.addEventListener('submit', async (e) => {
             e.preventDefault();
 
             const jobTitle = document.getElementById('jobTitle').value;
-            const candidateName = document.getElementById('candidateName').value;
             const jobDescription = document.getElementById('jobDescription').value;
+            const useAzureRealtime = document.getElementById('useAzureRealtime').checked;
 
             createBtn.disabled = true;
             createBtn.textContent = 'Creating...';
 
             try {
-                const response = await fetch('/api/create-session', {
+                const response = await fetch('/api/create-position', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
                     },
                     body: JSON.stringify({
                         jobTitle,
-                        candidateName,
-                        jobDescription
+                        jobDescription,
+                        useAzure: useAzureRealtime
                     })
                 });
 
                 const data = await response.json();
 
                 if (response.ok) {
-                    showMessage('success', 'Session created successfully!');
+                    showMessage('success', 'Position created successfully! Share the interview link with candidates.');
                     form.reset();
-                    loadSessions();
+                    await loadSessions();
                 } else {
-                    showMessage('error', data.error || 'Failed to create session');
+                    showMessage('error', data.error || 'Failed to create position');
                 }
             } catch (error) {
                 showMessage('error', 'Network error: ' + error.message);
             } finally {
                 createBtn.disabled = false;
-                createBtn.textContent = 'Create Interview Session';
+                createBtn.textContent = 'Create Interview Position';
             }
         });
 
@@ -289,58 +381,162 @@
 
         async function loadSessions() {
             try {
-                const response = await fetch('/api/sessions');
-                const sessions = await response.json();
+                const response = await fetch('/api/positions');
+                allSessions = await response.json();
 
-                if (sessions.length === 0) {
-                    sessionsList.innerHTML = '<p style="color: #999; text-align: center; padding: 20px;">No sessions created yet</p>';
-                    return;
-                }
+                // Sort by creation date (newest first)
+                allSessions.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 
-                sessionsList.innerHTML = sessions.map(session => `
-                    <div class="session-item">
-                        <h3>${session.jobTitle}</h3>
-                        ${session.candidateName ? `<p><strong>Candidate:</strong> ${session.candidateName}</p>` : ''}
-                        <p><strong>Created:</strong> ${new Date(session.createdAt).toLocaleString()}</p>
-                        <div class="session-link">
-                            <input type="text" value="${window.location.origin}/interview/${session.sessionId}" readonly>
-                            <button class="copy-btn" onclick="copyLink('${window.location.origin}/interview/${session.sessionId}')">Copy Link</button>
-                        </div>
-                        ${renderMediaLinks(session.media)}
-                        ${renderDownloads(session)}
-                    </div>
-                `).join('');
+                renderStats(allSessions);
+                filterSessions();
             } catch (error) {
                 console.error('Error loading sessions:', error);
             }
         }
 
-        function renderMediaLinks(media = {}) {
-            const items = [];
-            if (media.combined) {
-                items.push(`<a href="${media.combined}" target="_blank" rel="noopener">Recording (video + mixed audio)</a>`);
-            }
-            if (!items.length) {
-                return '<p style="color:#999;">No recordings yet</p>';
-            }
-            return `<div style="margin-top:10px; display:flex; gap:10px; flex-wrap:wrap;">${items.map(i => `<span style="background:#eef;border:1px solid #ccd;padding:6px 10px;border-radius:6px;">${i}</span>`).join('')}</div>`;
+        function renderStats(positions) {
+            const totalPositions = positions.length;
+            const totalCandidates = positions.reduce((sum, p) => sum + (p.candidateCount || 0), 0);
+            const completedCount = positions.reduce((sum, p) =>
+                sum + (p.sessions || []).filter(s => s.status === 'completed').length, 0);
+            const inProgressCount = positions.reduce((sum, p) =>
+                sum + (p.sessions || []).filter(s => s.status === 'in-progress').length, 0);
+
+            statsBar.innerHTML = `
+                <div class="stat-card">
+                    <div class="stat-value">${totalPositions}</div>
+                    <div class="stat-label">Total Positions</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">${totalCandidates}</div>
+                    <div class="stat-label">Total Candidates</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">${completedCount}</div>
+                    <div class="stat-label">Completed</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">${inProgressCount}</div>
+                    <div class="stat-label">In Progress</div>
+                </div>
+            `;
         }
 
-        function renderDownloads(session = {}) {
-            const items = [];
-            if (session.media?.combined) {
-                items.push(`<a href="${session.media.combined}" download>Download video</a>`);
+        function filterSessions() {
+            const searchTerm = searchInput.value.toLowerCase();
+            const statusValue = statusFilter.value;
+
+            const filtered = allSessions.filter(position => {
+                const matchesSearch = !searchTerm ||
+                    position.jobTitle.toLowerCase().includes(searchTerm) ||
+                    (position.sessions || []).some(s =>
+                        s.candidateName && s.candidateName.toLowerCase().includes(searchTerm)
+                    );
+
+                const matchesStatus = statusValue === 'all' ||
+                    (position.sessions || []).some(s => s.status === statusValue);
+
+                return matchesSearch && matchesStatus;
+            });
+
+            renderSessions(filtered);
+        }
+
+        function getFitCategory(score) {
+            if (score === null || score === undefined) return { label: 'N/A', class: '' };
+            if (score >= 75) return { label: 'Strong FIT', class: 'score-high' };
+            if (score >= 60) return { label: 'Moderate FIT', class: 'score-medium' };
+            return { label: 'Weak FIT', class: 'score-low' };
+        }
+
+        function renderSessions(positions) {
+            if (positions.length === 0) {
+                sessionsList.innerHTML = '<p style="color: #999; text-align: center; padding: 20px;">No positions found</p>';
+                return;
             }
-            if (session.transcriptPath) {
-                items.push(`<a href="${session.transcriptPath}" download>Download transcript</a>`);
+
+            sessionsList.innerHTML = positions.map(position => {
+                const candidates = position.sessions || [];
+                const candidateCount = candidates.length;
+                const lastScreening = position.lastScreeningDate
+                    ? new Date(position.lastScreeningDate).toLocaleString()
+                    : 'None';
+
+                const positionId = `position-${position.positionId}`;
+
+                return `
+                    <div class="session-item position-card">
+                        <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 10px;">
+                            <h3 style="margin: 0;">📋 ${position.jobTitle}</h3>
+                            <span style="background: #e0e7ff; color: #4338ca; padding: 5px 12px; border-radius: 12px; font-size: 0.85em; font-weight: 600;">
+                                ${candidateCount} ${candidateCount === 1 ? 'Candidate' : 'Candidates'}
+                            </span>
+                        </div>
+                        <p><strong>Created:</strong> ${new Date(position.createdAt).toLocaleString()}</p>
+                        <p><strong>Last Screening:</strong> ${lastScreening}</p>
+                        ${position.useAzure ? `<p><strong>Backend:</strong> Azure Realtime</p>` : ''}
+
+                        <div class="session-link">
+                            <input type="text" value="${buildInterviewLink(position)}" readonly>
+                            <button class="copy-btn" onclick="copyLink('${buildInterviewLink(position)}')">Copy Link</button>
+                        </div>
+
+                        ${candidateCount > 0 ? `
+                            <button class="toggle-candidates-btn" onclick="toggleCandidates('${positionId}')" style="margin-top: 15px; padding: 8px 16px; background: #f1f5f9; border: none; border-radius: 8px; cursor: pointer; width: 100%; font-weight: 600; color: #334155;">
+                                ▼ View ${candidateCount} ${candidateCount === 1 ? 'Candidate' : 'Candidates'}
+                            </button>
+                            <div id="${positionId}" class="candidates-list" style="display: none; margin-top: 15px;">
+                                ${candidates.map(candidate => renderCandidate(candidate)).join('')}
+                            </div>
+                        ` : '<p style="color: #999; margin-top: 15px; font-style: italic;">No candidates have taken this interview yet</p>'}
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function renderCandidate(candidate) {
+            const fit = getFitCategory(candidate.analysisScore);
+            return `
+                <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 15px; margin-bottom: 10px;">
+                    <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 8px;">
+                        <div>
+                            <strong style="font-size: 1.05em;">${candidate.candidateName}</strong>
+                            <p style="color: #64748b; font-size: 0.9em; margin: 2px 0;">${candidate.candidateEmail}</p>
+                        </div>
+                        ${candidate.analysisScore !== null && candidate.analysisScore !== undefined ? `
+                            <div style="text-align: right;">
+                                <div class="score-badge ${fit.class}">${candidate.analysisScore}/100</div>
+                                <div style="font-size: 0.85em; color: #64748b; margin-top: 4px;">${fit.label}</div>
+                            </div>
+                        ` : ''}
+                    </div>
+                    <p style="font-size: 0.9em; color: #64748b; margin: 5px 0;"><strong>Interviewed:</strong> ${new Date(candidate.createdAt).toLocaleString()}</p>
+                    ${candidate.completedAt ? `<p style="font-size: 0.9em; color: #64748b; margin: 5px 0;"><strong>Completed:</strong> ${new Date(candidate.completedAt).toLocaleString()}</p>` : ''}
+                    <p style="font-size: 0.9em; margin: 5px 0;">
+                        <span class="status-badge status-${candidate.status}">${candidate.status}</span>
+                    </p>
+                    ${candidate.media?.combined || candidate.transcriptPath || candidate.analysisPath ? `
+                        <div style="margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap;">
+                            ${candidate.media?.combined ? `<a href="${candidate.media.combined}" download style="background: #dbeafe; color: #1e40af; padding: 6px 12px; border-radius: 6px; text-decoration: none; font-size: 0.9em;">📹 Video</a>` : ''}
+                            ${candidate.transcriptPath ? `<a href="${candidate.transcriptPath}" download style="background: #fef3c7; color: #92400e; padding: 6px 12px; border-radius: 6px; text-decoration: none; font-size: 0.9em;">📄 Transcript</a>` : ''}
+                            ${candidate.analysisPath ? `<a href="${candidate.analysisPath}" download style="background: #d1fae5; color: #065f46; padding: 6px 12px; border-radius: 6px; text-decoration: none; font-size: 0.9em;">📊 Analysis</a>` : ''}
+                        </div>
+                    ` : ''}
+                </div>
+            `;
+        }
+
+        function toggleCandidates(positionId) {
+            const candidatesList = document.getElementById(positionId);
+            const button = event.target;
+
+            if (candidatesList.style.display === 'none') {
+                candidatesList.style.display = 'block';
+                button.textContent = button.textContent.replace('▼', '▲');
+            } else {
+                candidatesList.style.display = 'none';
+                button.textContent = button.textContent.replace('▲', '▼');
             }
-            if (session.analysisPath) {
-                items.push(`<a href="${session.analysisPath}" download>Download analysis</a>`);
-            }
-            if (!items.length) {
-                return '';
-            }
-            return `<div style="margin-top:10px; display:flex; gap:10px; flex-wrap:wrap;">${items.map(i => `<span style="background:#eef;border:1px solid #ccd;padding:6px 10px;border-radius:6px;">${i}</span>`).join('')}</div>`;
         }
 
         function copyLink(link) {
@@ -349,6 +545,11 @@
             }).catch(err => {
                 showMessage('error', 'Failed to copy link');
             });
+        }
+
+        function buildInterviewLink(position) {
+            const base = `${window.location.origin}/interview/${position.positionId}`;
+            return position.useAzure ? `${base}?azure=1` : base;
         }
     </script>
 </body>

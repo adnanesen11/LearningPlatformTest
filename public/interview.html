@@ -10,6 +10,28 @@
 </head>
 <body>
     <div id="app">
+        <!-- Candidate Info Collection Modal -->
+        <div id="candidate-info-modal" class="modal hidden">
+            <div class="modal-content">
+                <h2 class="modal-title">Welcome to Your Interview</h2>
+                <p class="modal-subtitle">Please enter your details to begin the screening interview</p>
+                <form id="candidate-info-form">
+                    <div class="form-group">
+                        <label for="candidate-name">Full Name *</label>
+                        <input type="text" id="candidate-name" required placeholder="Enter your full name">
+                    </div>
+                    <div class="form-group">
+                        <label for="candidate-email">Email Address *</label>
+                        <input type="email" id="candidate-email" required placeholder="Enter your email">
+                    </div>
+                    <button type="submit" class="btn btn-primary btn-large">
+                        <span class="btn-icon">▶</span>
+                        Continue to Interview
+                    </button>
+                </form>
+            </div>
+        </div>
+
         <!-- Professional Header -->
         <header class="header">
             <div class="header-content">
