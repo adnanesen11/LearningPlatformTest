@@ -327,7 +327,7 @@ async function startInterview() {
                     {
                         type: 'function',
                         name: 'end_interview',
-                        description: 'IMMEDIATELY call this function to end the interview. REQUIRED when: (1) all primary questions completed, (2) candidate asks to end/stop (highest priority - call immediately on first request), or (3) candidate refuses to continue. The interview will NOT end without this function call. When candidate requests to end, call this function IN THE SAME RESPONSE as your goodbye message.',
+                        description: 'Call this function to end the interview. REQUIRED when: (1) all primary questions completed, (2) candidate asks to end/stop, or (3) candidate refuses to continue. IMPORTANT: When calling this function, you MUST ALSO generate a spoken audio message in the same response - do NOT call this function alone without speaking. Your response should contain both audio output AND this function call.',
                         parameters: {
                             type: 'object',
                             properties: {
@@ -725,7 +725,12 @@ function handleServerEvent(event) {
         case 'output_audio_buffer.stopped':
             outputAudioActive = false;
             if (pendingEndInterview && !alreadyEnded) {
-                stopInterview();
+                // Add delay to ensure audio finishes playing through speakers
+                setTimeout(() => {
+                    if (pendingEndInterview && !alreadyEnded) {
+                        stopInterview();
+                    }
+                }, 1500);
             }
             break;
 
