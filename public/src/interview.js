@@ -68,6 +68,7 @@ let alreadyEnded = false;
 let pendingEndInterview = false;
 let outputAudioActive = false;
 let lastAssistantResponseId = null;
+let pendingEndTimeout = null;
 
 // Token and cost tracking
 const tokenUsage = {
@@ -326,15 +327,16 @@ async function startInterview() {
                     {
                         type: 'function',
                         name: 'end_interview',
-                        description: 'Signal that the interview is complete and the assistant should stop. Include an optional reason.',
+                        description: 'IMMEDIATELY call this function to end the interview. REQUIRED when: (1) all primary questions completed, (2) candidate asks to end/stop (highest priority - call immediately on first request), or (3) candidate refuses to continue. The interview will NOT end without this function call. When candidate requests to end, call this function IN THE SAME RESPONSE as your goodbye message.',
                         parameters: {
                             type: 'object',
                             properties: {
                                 reason: {
                                     type: 'string',
-                                    description: 'Brief note on why the interview is ending.'
+                                    description: 'Brief reason: "Interview completed" OR "Candidate requested to end" OR "All questions asked"'
                                 }
-                            }
+                            },
+                            required: ['reason']
                         }
                     }
                 ]
@@ -397,6 +399,10 @@ async function startInterview() {
 
 // Stop interview session
 async function stopInterview() {
+    if (pendingEndTimeout) {
+        clearTimeout(pendingEndTimeout);
+        pendingEndTimeout = null;
+    }
     if (alreadyEnded) {
         return;
     }
@@ -452,6 +458,27 @@ function sendEvent(event) {
     }
 }
 
+function handleEndInterviewSignal(source = 'unknown') {
+    if (alreadyEnded) {
+        return;
+    }
+    pendingEndInterview = true;
+
+    // Always wait for audio to finish playing before ending
+    // Don't end immediately even if outputAudioActive is false - the audio might not have started yet
+
+    if (pendingEndTimeout) {
+        clearTimeout(pendingEndTimeout);
+    }
+    // Set a longer failsafe timeout to ensure audio has time to play
+    pendingEndTimeout = setTimeout(() => {
+        if (pendingEndInterview && !alreadyEnded) {
+            console.warn(`Force stopping interview after end_interview (${source}) timeout`);
+            stopInterview();
+        }
+    }, 5000);
+}
+
 function triggerInitialGreeting() {
     if (hasSentGreeting) {
         return;
@@ -476,6 +503,15 @@ function triggerInitialGreeting() {
 // Handle server events
 function handleServerEvent(event) {
     console.log('Received event:', event.type, event);
+
+    // Capture a frozen copy of each event for debugging/export.
+    if (!window.__evtLog) {
+        window.__evtLog = [];
+    }
+    const clonedEvent = typeof structuredClone === 'function'
+        ? structuredClone(event)
+        : JSON.parse(JSON.stringify(event));
+    window.__evtLog.push({ ts: Date.now(), type: event.type, event: clonedEvent });
 
     const extractItemText = (item = {}) => {
         const content =
@@ -515,10 +551,25 @@ function handleServerEvent(event) {
             } else if (item.role === 'user') {
                 currentUserItemId = item.id;
             }
+            if (item.type === 'function_call' && item.name === 'end_interview' && !alreadyEnded) {
+                console.log('End interview function item observed', item);
+                handleEndInterviewSignal('conversation.item');
+            }
+            break;
+        }
+
+        case 'response.output_item.added':
+        case 'response.output_item.done': {
+            const item = event.item;
+            if (item?.type === 'function_call' && item.name === 'end_interview' && !alreadyEnded) {
+                console.log('End interview function output item', item);
+                handleEndInterviewSignal(event.type);
+            }
             break;
         }
 
         case 'response.created': {
+            console.log('Response created:', event.response?.id);
             const respId = event.response?.id;
             if (respId) {
                 lastAssistantResponseId = respId;
@@ -661,11 +712,7 @@ function handleServerEvent(event) {
                 const fnCall = output.find(o => o.type === 'function_call' && o.name === 'end_interview');
                 if (fnCall && !alreadyEnded) {
                     console.log('Function call received: end_interview', fnCall);
-                    pendingEndInterview = true;
-                    // If no audio is playing, we can end immediately; otherwise wait for stop event
-                    if (!outputAudioActive) {
-                        stopInterview();
-                    }
+                    handleEndInterviewSignal('response.done');
                 }
             }
             break;
@@ -683,6 +730,7 @@ function handleServerEvent(event) {
             break;
 
         case 'input_audio_buffer.speech_started':
+            console.log('Speech started');
             userSpeaking = true;
             speechStartTimestamp = Date.now();
             break;
@@ -710,6 +758,7 @@ function handleServerEvent(event) {
         }
 
         case 'input_audio_buffer.speech_stopped':
+            console.log('Speech stopped - should trigger response');
             if (userSpeaking && speechStartTimestamp) {
                 const deltaSeconds = (Date.now() - speechStartTimestamp) / 1000;
                 tokenUsage.speechDurationSeconds += Math.max(deltaSeconds, 0);
@@ -724,6 +773,16 @@ function handleServerEvent(event) {
             break;
     }
 }
+
+// Helper to download captured events as JSON for debugging/analysis.
+window.downloadEvents = () => {
+    const data = window.__evtLog || [];
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'events.json';
+    a.click();
+};
 
 // Chat UI functions
 const messageElements = new Map();

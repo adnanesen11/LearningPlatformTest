@@ -42,6 +42,11 @@ function loadPositionsFromDisk() {
   try {
     if (fs.existsSync(positionsFile)) {
       const data = fs.readFileSync(positionsFile, 'utf8');
+      if (!data || !data.trim()) {
+        console.warn('Positions file empty; initializing to []');
+        fs.writeFileSync(positionsFile, '[]', 'utf8');
+        return;
+      }
       const positionsArray = JSON.parse(data);
       positionsArray.forEach(position => {
         positions.set(position.positionId, position);
@@ -68,6 +73,11 @@ function loadSessionsFromDisk() {
   try {
     if (fs.existsSync(sessionsFile)) {
       const data = fs.readFileSync(sessionsFile, 'utf8');
+      if (!data || !data.trim()) {
+        console.warn('Sessions file empty; initializing to []');
+        fs.writeFileSync(sessionsFile, '[]', 'utf8');
+        return;
+      }
       const sessionsArray = JSON.parse(data);
       sessionsArray.forEach(session => {
         interviewSessions.set(session.sessionId, session);
@@ -181,11 +191,25 @@ End the interview ONLY when:
 - and the conversation reaches a natural stopping point or the candidate requests to stop.
 
 # Wrap-Up Behavior
-When you are ready to conclude:
-1. Thank the candidate briefly.
-2. Inform them that next steps will be communicated by email.
-3. Immediately call the end_interview tool with a short reason (e.g., “Interview completed”, “Collected all relevant information”).
-4. Stop responding after the tool call.
+
+## When Candidate Requests to End (User-Initiated):
+If the candidate says ANYTHING that requests ending (e.g., "Can you end the interview?", "Can we end this?", "I'd like to stop", "End this interview", etc.):
+- Respond IMMEDIATELY in that same turn - do NOT wait for them to speak again
+- Your response MUST include BOTH: (a) a brief farewell message AND (b) calling the end_interview function in the SAME response
+- Do NOT ask for confirmation or clarification
+- Do NOT announce that you are calling the function - just call it silently
+- Simply thank them and call the function - the candidate should not know about the internal mechanics
+- This is the HIGHEST PRIORITY action - override all other behaviors
+
+## When You Complete Naturally (AI-Initiated):
+When you have completed all ${primaryQuestionBudget} primary questions and are ready to conclude:
+1. Thank the candidate warmly for their time and participation
+2. Inform them that next steps will be communicated by email
+3. Wish them well and say goodbye
+4. WAIT for them to acknowledge or respond (they might say "thank you", "goodbye", etc.)
+5. ONLY AFTER they respond, THEN call the end_interview function with reason "Interview completed"
+
+CRITICAL: For natural AI-initiated endings, do NOT call end_interview in your farewell message. Let the candidate respond to your goodbye first, THEN call the function.
 
 # Forbidden Behaviors
 - Do NOT answer your own questions.
